@@ -1470,6 +1470,51 @@ ADMIN_VIEW.push=()=>{
   ${p.log.length?p.log.map(pushLogCard).join(''):'<div class="card muted">Henüz bildirim gönderilmedi.</div>'}`;
 };
 
+/* ============ KALICI KAYIT (localStorage) — ek modül, mevcut koda dokunmaz ============ */
+const HC_KEY='hanscube_state_v1';
+const HC_KEYS=['bookings','carrierApps','companies','chats','user','corpName','itemSeq','demoI'];
+function hcSnapshot(strip){
+  const o={v:1,seq:seq,mode:(S.mode==='ind'||S.mode==='corp')?S.mode:null,tab:S.tab};
+  HC_KEYS.forEach(k=>{o[k]=S[k]});
+  o.corp=S.corp;
+  o.push={appId:S.push.appId,log:S.push.log};
+  return JSON.stringify(o,strip?(k,v)=>((k==='thumb'||k==='photo')?undefined:v):undefined);
+}
+let hcNoSave=false;
+function hcSave(){
+  if(hcNoSave)return;
+  try{
+    try{localStorage.setItem(HC_KEY,hcSnapshot(false))}
+    catch(e){localStorage.setItem(HC_KEY,hcSnapshot(true))}
+  }catch(e){}
+}
+function hcLoad(){
+  try{
+    const raw=localStorage.getItem(HC_KEY);if(!raw)return;
+    const d=JSON.parse(raw);if(!d||d.v!==1)return;
+    HC_KEYS.forEach(k=>{if(d[k]!==undefined)S[k]=d[k]});
+    if(d.corp)S.corp=Object.assign({},S.corp,d.corp,{planPreview:false});
+    if(d.push){
+      S.push.appId=d.push.appId||'';
+      S.push.log=(d.push.log||[]).map(e=>e.status==='Zamanlandı'?Object.assign(e,{status:'Gönderilemedi'}):e);
+    }
+    if(typeof d.seq==='number')seq=d.seq;
+    if((d.mode==='ind'||d.mode==='corp')&&TABS[d.mode].some(t=>t[0]===d.tab)){S.mode=d.mode;S.tab=d.tab}
+  }catch(e){}
+}
+function hcReset(){hcNoSave=true;try{localStorage.removeItem(HC_KEY)}catch(e){}location.reload()}
+hcLoad();
+let hcTimer=null;
+const hcRender=render;
+render=function(top){hcRender(top);clearTimeout(hcTimer);hcTimer=setTimeout(hcSave,300)};
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')hcSave()});
+window.addEventListener('pagehide',hcSave);
+const hcWelcome=welcome;
+welcome=function(){
+  const h=hcWelcome(),i=h.lastIndexOf('</div>');
+  return h.slice(0,i)+`<button class="linkbtn" style="font-size:11.5px;color:var(--muted);text-decoration:none;opacity:.8" onclick="if(confirm('Kayıtlı tüm uygulama verileri silinsin mi?'))hcReset()">Kayıtlı verileri sıfırla</button>`+h.slice(i);
+};
+
 /* Başlat */
 render();
 </script>
