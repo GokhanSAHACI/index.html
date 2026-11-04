@@ -1,0 +1,105 @@
+'use strict';
+/*
+ * Han's Cube — tek parça sunucu (bağımlılık yok, sadece Node 18+)
+ *   /                         -> uygulama (index.html)
+ *   /OneSignalSDKWorker.js    -> arka plan bildirim dosyası
+ *   POST /api/push            -> OneSignal'a bildirim gönderir (REST anahtarı sadece burada durur)
+ *
+ * Render > Environment bölümüne şu 3 değişkeni ekle:
+ *   ONESIGNAL_APP_ID   OneSignal App ID
+ *   ONESIGNAL_API_KEY  OneSignal REST API Key
+ *   ADMIN_SECRET       Uydurduğun uzun parola (yönetici panelindeki "gizli anahtar")
+ */
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const PORT = process.env.PORT || 3000;
+const APP_ID = (process.env.ONESIGNAL_APP_ID || '').trim();
+const API_KEY = (process.env.ONESIGNAL_API_KEY || '').trim();
+const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
+
+/* index.html'e App ID ve gönderim adresi otomatik yazılır; dosyayı elle düzenlemen gerekmez */
+const safeId = APP_ID.replace(/[^A-Za-z0-9-]/g, '');
+const HTML = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8')
+  .replace("const HC_ONESIGNAL_APP_ID='';", "const HC_ONESIGNAL_APP_ID='" + safeId + "';")
+  .replace("let hcCfg={url:'',secret:''};", "let hcCfg={url:'/api/push',secret:''};");
+const SW = fs.readFileSync(path.join(__dirname, 'OneSignalSDKWorker.js'), 'utf8');
+
+function secretOk(got) {
+  if (!ADMIN_SECRET) return false;
+  const a = Buffer.from(String(got || '')), b = Buffer.from(ADMIN_SECRET);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/* basit hız sınırı: dakikada en fazla 60 gönderim isteği */
+let windowStart = Date.now(), count = 0;
+function limited() {
+  if (Date.now() - windowStart > 60000) { windowStart = Date.now(); count = 0; }
+  return ++count > 60;
+}
+
+function send(res, status, body, headers) {
+  res.writeHead(status, Object.assign({ 'X-Content-Type-Options': 'nosniff' }, headers));
+  res.end(body);
+}
+const sendJson = (res, status, obj) => send(res, status, JSON.stringify(obj), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', c => { data += c; if (data.length > 20000) { reject(new Error('too_large')); req.destroy(); } });
+    req.on('end', () => resolve(data));
+    req.on('error', reject);
+  });
+}
+
+async function handlePush(req, res) {
+  if (!secretOk(req.headers['x-admin-secret'])) return sendJson(res, 401, { error: 'unauthorized' });
+  if (limited()) return sendJson(res, 429, { error: 'too_many_requests' });
+  if (!APP_ID || !API_KEY) return sendJson(res, 500, { error: 'server_not_configured' });
+  let d;
+  try { d = JSON.parse(await readBody(req)); } catch (e) { return sendJson(res, 400, { error: 'bad_json' }); }
+  const title = String(d.title || "Han's Cube").slice(0, 60);
+  const body = String(d.body || '').slice(0, 240);
+  if (!body) return sendJson(res, 400, { error: 'empty_body' });
+  const payload = {
+    app_id: APP_ID,
+    target_channel: 'push',
+    headings: { en: title, tr: title },
+    contents: { en: body, tr: body }
+  };
+  if (Array.isArray(d.segments)) payload.included_segments = d.segments;
+  else if (Array.isArray(d.filters)) payload.filters = d.filters;
+  else return sendJson(res, 400, { error: 'no_audience' });
+  if (d.send_after) payload.send_after = String(d.send_after);
+  try {
+    const r = await fetch('https://api.onesignal.com/notifications?c=push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Authorization': 'Key ' + API_KEY },
+      body: JSON.stringify(payload)
+    });
+    send(res, r.status, await r.text(), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  } catch (e) {
+    sendJson(res, 502, { error: 'onesignal_unreachable' });
+  }
+}
+
+http.createServer(async (req, res) => {
+  const url = (req.url || '/').split('?')[0];
+  try {
+    if (req.method === 'POST' && url === '/api/push') return await handlePush(req, res);
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      if (url === '/' || url === '/index.html') return send(res, 200, HTML, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+      if (url === '/OneSignalSDKWorker.js') return send(res, 200, SW, { 'Content-Type': 'application/javascript; charset=utf-8', 'Service-Worker-Allowed': '/', 'Cache-Control': 'no-cache' });
+      if (url === '/healthz') return send(res, 200, 'ok', { 'Content-Type': 'text/plain' });
+    }
+    send(res, 404, 'Not found', { 'Content-Type': 'text/plain; charset=utf-8' });
+  } catch (e) {
+    sendJson(res, 500, { error: 'server_error' });
+  }
+}).listen(PORT, () => {
+  console.log("Han's Cube çalışıyor, port " + PORT);
+  console.log('OneSignal App ID:', APP_ID ? 'tanımlı' : 'EKSİK', '| REST anahtarı:', API_KEY ? 'tanımlı' : 'EKSİK', '| Gizli anahtar:', ADMIN_SECRET ? 'tanımlı' : 'EKSİK');
+});

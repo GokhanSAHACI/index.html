@@ -1,0 +1,9 @@
+{
+  "name": "hanscube",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Han's Cube — uygulama + OneSignal bildirim gönderim sunucusu (tek parça)",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
